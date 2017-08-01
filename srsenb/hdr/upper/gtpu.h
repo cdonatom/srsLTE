@@ -34,6 +34,8 @@
 #include "srslte/srslte.h"
 #include "srslte/interfaces/enb_interfaces.h"
 
+#include <linux/if.h>
+
 #ifndef GTPU_H
 #define GTPU_H
 
@@ -81,7 +83,8 @@ public:
   
   // gtpu_interface_pdcp
   void write_pdu(uint16_t rnti, uint32_t lcid, srslte::byte_buffer_t *pdu); 
-
+  static void* run_rx_thread(void *m);
+  void listen_rx_thread();
   
 private:
   static const int THREAD_PRIO = 7;
@@ -94,17 +97,24 @@ private:
   std::string                  mme_addr;
   srsenb::pdcp_interface_gtpu *pdcp;
   srslte::log                 *gtpu_log;
+  int32                        tun_fd;
+  struct ifreq                 ifr;
+  int32                        sock;
+  int32                        sock_rx;
 
   typedef struct{
     uint32_t teids_in[SRSENB_N_RADIO_BEARERS];
     uint32_t teids_out[SRSENB_N_RADIO_BEARERS];
   }bearer_map;
   std::map<uint16_t, bearer_map> rnti_bearers;
+  uint16_t m_rnti;
+  uint32_t m_lcid;
 
   srslte_netsink_t      snk;
   srslte_netsource_t    src;
 
   void run_thread();
+
   
   pthread_mutex_t mutex; 
 

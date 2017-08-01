@@ -25,6 +25,17 @@
  */
 
 #include "upper/gtpu.h"
+#include <stdio.h>
+#include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <arpa/inet.h>
+#include <linux/ip.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+
 #include <unistd.h>
 
 using namespace srslte;
@@ -50,13 +61,99 @@ bool gtpu::init(std::string gtp_bind_addr_, std::string mme_addr_, srsenb::pdcp_
     gtpu_log->error("Failed to create sink socket on %s:%d", mme_addr.c_str(), GTPU_PORT);
     return false;
   }
-  
+
+  // CDonato's hacker code
+
+  char dev[IFNAMSIZ] = "tun_srsenb";
+  char *err_str;
+
+  // Construct the TUN device
+  tun_fd = open("/dev/net/tun", O_RDWR);
+  gtpu_log->info("eNB TUN file descriptor = %d\n", tun_fd);
+  if(0 > tun_fd)
+  {
+      err_str = strerror(errno);
+      gtpu_log->debug("Failed to open TUN device: %s\n", err_str);
+      return(ERROR_CANT_START);
+  }
+  memset(&ifr, 0, sizeof(ifr));
+  ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+  strncpy(ifr.ifr_ifrn.ifrn_name, dev, IFNAMSIZ);
+  if(0 > ioctl(tun_fd, TUNSETIFF, &ifr))
+  {
+      err_str = strerror(errno);
+      gtpu_log->debug("Failed to set TUN device name: %s\n", err_str);
+      close(tun_fd);
+      return(ERROR_CANT_START);
+  }
+
+  // Bring up the interface
+  sock = socket(AF_INET, SOCK_DGRAM, 0);
+  if(0 > ioctl(sock, SIOCGIFFLAGS, &ifr))
+  {
+      err_str = strerror(errno);
+      gtpu_log->debug("Failed to bring up socket: %s\n", err_str);
+      close(tun_fd);
+      return(ERROR_CANT_START);
+  }
+  ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+  if(0 > ioctl(sock, SIOCSIFFLAGS, &ifr))
+  {
+      err_str = strerror(errno);
+      gtpu_log->debug("Failed to set socket flags: %s\n", err_str);
+      close(tun_fd);
+      return(ERROR_CANT_START);
+  }
+
+  // Setup the IP address
+  sock                                                   = socket(AF_INET, SOCK_DGRAM, 0);
+  ifr.ifr_addr.sa_family                                 = AF_INET;
+  ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr = inet_addr("172.21.20.100");
+  if(0 > ioctl(sock, SIOCSIFADDR, &ifr))
+  {
+      err_str = strerror(errno);
+      gtpu_log->debug("Failed to set socket address: %s\n", err_str);
+      close(tun_fd);
+      return(ERROR_CANT_START);
+  }
+  ifr.ifr_netmask.sa_family                                 = AF_INET;
+  ((struct sockaddr_in *)&ifr.ifr_netmask)->sin_addr.s_addr = inet_addr("255.255.255.0");
+  if(0 > ioctl(sock, SIOCSIFNETMASK, &ifr))
+  {
+      err_str = strerror(errno);
+      gtpu_log->debug("Failed to set socket netmask: %s\n", err_str);
+      close(tun_fd);
+      return(ERROR_CANT_START);
+  }
+
+  // char *err_str;
+  // sock = socket (AF_INET, SOCK_RAW, IPPROTO_RAW);
+  // int one = 1;
+
+  // if (setsockopt (sock, IPPROTO_IP, IP_HDRINCL, &one, sizeof (one)) < 0)
+  // {
+  //   err_str = strerror(errno);
+  //   gtpu_log->debug("Failed to assign options: %s\n", err_str);
+  // }
+
+  // END CDonato's hacker code
+
   srslte_netsink_set_nonblocking(&snk);
+  pthread_t thrd;
+  pthread_create(&thrd, NULL, &run_rx_thread, this);
 
   // Setup a thread to receive packets from the src socket
   start(THREAD_PRIO);
+
   return true;
 
+}
+
+void* gtpu::run_rx_thread(void *m_)
+{
+  gtpu *m = (gtpu*)m_;
+  m->listen_rx_thread();
+  return NULL;
 }
 
 void gtpu::stop()
@@ -88,9 +185,40 @@ void gtpu::write_pdu(uint16_t rnti, uint32_t lcid, srslte::byte_buffer_t* pdu)
   header.message_type = 0xFF;
   header.length       = pdu->N_bytes;
   header.teid         = rnti_bearers[rnti].teids_out[lcid];
+  m_rnti = rnti;
+  m_lcid = lcid;
 
-  gtpu_write_header(&header, pdu);
-  srslte_netsink_write(&snk, pdu->msg, pdu->N_bytes);
+// CDonato's code
+  char addr_str[INET_ADDRSTRLEN];
+
+  inet_ntop(AF_INET, &(pdu->msg[16]), addr_str, INET_ADDRSTRLEN);
+
+  if (strcmp(addr_str, "8.8.8.8") == 0)
+  {
+    int n = write (tun_fd, pdu->msg, pdu->N_bytes);
+  }
+  else
+  { 
+    gtpu_write_header(&header, pdu);
+    srslte_netsink_write(&snk, pdu->msg, pdu->N_bytes);
+  }
+
+  // struct sockaddr addr;
+  // addr.sa_family = AF_INET;
+  // memcpy((void*)&(addr.sa_data), (void*) &(pdu->msg[16]), sizeof(uint8_t)*4);
+
+  // char *err_str;
+  // int n = sendto(sock, pdu->msg, pdu->N_bytes, 0, &addr, sizeof(addr));
+  // if ( n < 0)
+  // {
+  //     err_str = strerror(errno);
+  //     gtpu_log->debug("Failed to send packet: %s\n", err_str);
+  // }
+
+// End CDonato's code
+
+  //gtpu_write_header(&header, pdu);
+  //srslte_netsink_write(&snk, pdu->msg, pdu->N_bytes);
   pool->deallocate(pdu);
 }
 
@@ -139,24 +267,21 @@ void gtpu::rem_user(uint16_t rnti)
   pthread_mutex_unlock(&mutex); 
 }
 
-void gtpu::run_thread()
+// CDonato's code
+void gtpu::listen_rx_thread()
 {
+  
   byte_buffer_t *pdu = pool_allocate;
   run_enable = true;
+  uint16_t rnti = 0;
+  uint16_t lcid = 0;
 
-  running=true; 
-  while(run_enable) {
-    pdu->reset();
-    gtpu_log->debug("Waiting for read...\n");
-    pdu->N_bytes = srslte_netsource_read(&src, pdu->msg, SRSENB_MAX_BUFFER_SIZE_BYTES - SRSENB_BUFFER_HEADER_OFFSET);
-
-    
-    gtpu_header_t header;
-    gtpu_read_header(pdu, &header);
-
-    uint16_t rnti = 0;
-    uint16_t lcid = 0;
-    teidin_to_rntilcid(header.teid, &rnti, &lcid);
+  while(run_enable) 
+  {
+    gtpu_log->debug("Waiting for read from tun_srsenb...\n");
+    pdu->N_bytes = read(tun_fd, pdu->msg, SRSLTE_MAX_BUFFER_SIZE_BYTES-SRSLTE_BUFFER_HEADER_OFFSET);
+    rnti = m_rnti;
+    lcid = m_lcid;
 
     pthread_mutex_lock(&mutex); 
     bool user_exists = (rnti_bearers.count(rnti) > 0);
@@ -171,7 +296,58 @@ void gtpu::run_thread()
       gtpu_log->error("Invalid LCID for DL PDU: %d - dropping packet\n", lcid);
       continue;
     }
+  
+    gtpu_log->info_hex(pdu->msg, pdu->N_bytes, "RX GTPU PDU rnti=0x%x, lcid=%d", rnti, lcid);
 
+    pdcp->write_sdu(rnti, lcid, pdu);
+    do {
+      pdu = pool_allocate;
+      if (!pdu) {
+        gtpu_log->console("GTPU Buffer pool empty. Trying again...\n");
+        usleep(10000);
+      }
+    } while(!pdu); 
+    
+  }
+
+}
+
+void gtpu::run_thread()
+{
+
+  byte_buffer_t *pdu = pool_allocate;
+  run_enable = true;
+  running=true;
+
+  uint16_t rnti = 0;
+  uint16_t lcid = 0;
+
+  while(run_enable) {
+    
+    pdu->reset();
+    gtpu_log->debug("Waiting for read...\n");
+
+    pdu->N_bytes = srslte_netsource_read(&src, pdu->msg, SRSENB_MAX_BUFFER_SIZE_BYTES - SRSENB_BUFFER_HEADER_OFFSET);
+    gtpu_header_t header;
+    gtpu_read_header(pdu, &header);
+  
+    teidin_to_rntilcid(header.teid, &rnti, &lcid);
+
+
+    pthread_mutex_lock(&mutex); 
+    bool user_exists = (rnti_bearers.count(rnti) > 0);
+    pthread_mutex_unlock(&mutex); 
+    
+    if(!user_exists) {
+      gtpu_log->error("Unrecognized RNTI for DL PDU: 0x%x - dropping packet\n", rnti);
+      continue;
+    }
+
+    if(lcid < SRSENB_N_SRB || lcid >= SRSENB_N_RADIO_BEARERS) {
+      gtpu_log->error("Invalid LCID for DL PDU: %d - dropping packet\n", lcid);
+      continue;
+    }
+  
     gtpu_log->info_hex(pdu->msg, pdu->N_bytes, "RX GTPU PDU rnti=0x%x, lcid=%d", rnti, lcid);
 
     pdcp->write_sdu(rnti, lcid, pdu);
