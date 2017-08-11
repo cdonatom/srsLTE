@@ -1,6 +1,6 @@
 #! /bin/bash
 
-if [ "$#" -lt 1 ];then
+if [ "$#" -ne 1 ];then
     echo "Execute as: $0 <dev>"
     exit 1
 fi
