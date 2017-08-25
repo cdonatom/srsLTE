@@ -26,6 +26,8 @@
 
 #include <string.h>
 #include <map>
+#include <vector>
+#include <linux/ip.h>
 
 #include "srslte/common/buffer_pool.h"
 #include "srslte/common/log.h"
@@ -107,8 +109,14 @@ private:
     uint32_t teids_out[SRSENB_N_RADIO_BEARERS];
   }bearer_map;
   std::map<uint16_t, bearer_map> rnti_bearers;
-  uint16_t m_rnti;
-  uint32_t m_lcid;
+
+  typedef struct{
+    uint16_t m_rnti;
+    uint32_t m_lcid;
+    char ip_addr[4];
+  } ip_map;
+
+  std::vector<ip_map> m_bearers_ip;
 
   srslte_netsink_t      snk;
   srslte_netsource_t    src;

@@ -185,15 +185,40 @@ void gtpu::write_pdu(uint16_t rnti, uint32_t lcid, srslte::byte_buffer_t* pdu)
   header.message_type = 0xFF;
   header.length       = pdu->N_bytes;
   header.teid         = rnti_bearers[rnti].teids_out[lcid];
-  m_rnti = rnti;
-  m_lcid = lcid;
 
 // CDonato's code
   char addr_str[INET_ADDRSTRLEN];
+  ip_map temp;
+  temp.m_rnti = rnti;
+  temp.m_lcid = lcid;
 
-  inet_ntop(AF_INET, &(pdu->msg[16]), addr_str, INET_ADDRSTRLEN);
+  // We copy the source ip addr
+  memcpy((void*)temp.ip_addr, (void*)&(pdu->msg[12]), 4);
+  inet_ntop(AF_INET, &(pdu->msg[12]), addr_str, INET_ADDRSTRLEN);
 
-  if (strcmp(addr_str, "8.8.8.8") == 0)
+  bool ip_found = false;
+  for( unsigned int i = 0; i < m_bearers_ip.size(); i++)
+  {
+    if (memcmp((void*)m_bearers_ip.at(i).ip_addr, (void*) &(pdu->msg[12]), 4) == 0)
+    { 
+      gtpu_log->debug("Updating values for: %s, rnti = %d, lcid = %d \n", addr_str,  m_bearers_ip.at(i).m_rnti, m_bearers_ip.at(i).m_lcid);
+      ip_found = true;
+      m_bearers_ip.at(i).m_rnti = rnti;
+      m_bearers_ip.at(i).m_lcid = lcid;
+      break;
+    }
+  }
+  if (!ip_found)
+  {
+    gtpu_log->debug("Adding for: %s, rnti = %d, lcid = %d \n", addr_str, temp.m_rnti, temp.m_lcid);
+    m_bearers_ip.push_back(temp);
+  }
+ 
+  struct in_addr network;
+  inet_pton(AF_INET, "172.21.20.0", (void *) &network);
+  //inet_ntop(AF_INET, &(pdu->msg[16]), addr_str, INET_ADDRSTRLEN);
+
+  if (memcmp((void*)&(pdu->msg[16]), (void*) &network, 3) == 0)
   {
     int n = write (tun_fd, pdu->msg, pdu->N_bytes);
   }
@@ -280,30 +305,41 @@ void gtpu::listen_rx_thread()
   {
     gtpu_log->debug("Waiting for read from tun_srsenb...\n");
     pdu->N_bytes = read(tun_fd, pdu->msg, SRSLTE_MAX_BUFFER_SIZE_BYTES-SRSLTE_BUFFER_HEADER_OFFSET);
-    rnti = m_rnti;
-    lcid = m_lcid;
+
+    char addr_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(pdu->msg[16]), addr_str, INET_ADDRSTRLEN);
+    for( unsigned int i = 0; i < m_bearers_ip.size(); i++)
+    {
+      gtpu_log->debug("Map: %s, rnti = %d, lcid = %d \n", m_bearers_ip.at(i).ip_addr,  m_bearers_ip.at(i).m_rnti, m_bearers_ip.at(i).m_lcid);
+      if (memcmp((void*) m_bearers_ip.at(i).ip_addr, (void*) &(pdu->msg[16]), 4 ) == 0)
+      {
+        gtpu_log->debug("Matched IP Map: %s, rnti = 0x%x, lcid = %d \n", addr_str,  m_bearers_ip.at(i).m_rnti, m_bearers_ip.at(i).m_lcid);
+        rnti = m_bearers_ip.at(i).m_rnti;
+        lcid = m_bearers_ip.at(i).m_lcid;
+      }
+    }
 
     pthread_mutex_lock(&mutex); 
     bool user_exists = (rnti_bearers.count(rnti) > 0);
     pthread_mutex_unlock(&mutex); 
     
     if(!user_exists) {
-      gtpu_log->error("Unrecognized RNTI for DL PDU: 0x%x - dropping packet\n", rnti);
+      gtpu_log->error("listen_rx_thread: Unrecognized RNTI for DL PDU: 0x%x - dropping packet\n", rnti);
       continue;
     }
 
     if(lcid < SRSENB_N_SRB || lcid >= SRSENB_N_RADIO_BEARERS) {
-      gtpu_log->error("Invalid LCID for DL PDU: %d - dropping packet\n", lcid);
+      gtpu_log->error("listen_rx_thread: Invalid LCID for DL PDU: %d - dropping packet\n", lcid);
       continue;
     }
   
-    gtpu_log->info_hex(pdu->msg, pdu->N_bytes, "RX GTPU PDU rnti=0x%x, lcid=%d", rnti, lcid);
+    gtpu_log->info_hex(pdu->msg, pdu->N_bytes, "listen_rx_thread: RX GTPU PDU rnti=0x%x, lcid=%d", rnti, lcid);
 
     pdcp->write_sdu(rnti, lcid, pdu);
     do {
       pdu = pool_allocate;
       if (!pdu) {
-        gtpu_log->console("GTPU Buffer pool empty. Trying again...\n");
+        gtpu_log->console("listen_rx_thread: GTPU Buffer pool empty. Trying again...\n");
         usleep(10000);
       }
     } while(!pdu); 
