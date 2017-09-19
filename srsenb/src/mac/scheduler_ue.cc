@@ -369,8 +369,9 @@ int sched_ue::generate_format1(dl_harq_proc *h,
     srslte_ra_dl_dci_to_grant_prb_allocation(dci, &grant, cell.nof_prb);
     uint32_t nof_ctrl_symbols = cfi+(cell.nof_prb<10?1:0);
     uint32_t nof_re = srslte_ra_dl_grant_nof_re(&grant, cell, sf_idx, nof_ctrl_symbols);
-    if (fixed_mcs_dl < 0) {
-      tbs = alloc_tbs(dl_cqi, nof_prb, nof_re, req_bytes, max_mcs_dl, &mcs);      
+    
+if (fixed_mcs_dl < 0) {
+      tbs = alloc_tbs(dl_cqi, nof_prb, nof_re, req_bytes, max_mcs_dl, &mcs, true);      
     } else {
       tbs = srslte_ra_tbs_from_idx(srslte_ra_tbs_idx_from_mcs(fixed_mcs_dl), nof_prb);
       mcs = fixed_mcs_dl; 
@@ -440,8 +441,20 @@ int sched_ue::generate_format0(ul_harq_proc *h,
     
     uint32_t N_srs = 0; 
     uint32_t nof_re = (2*(SRSLTE_CP_NSYMB(cell.cp)-1) - N_srs)*allocation.L*SRSLTE_NRE;
+// GRINGO CACCA
+/*   fixed_mcs_ul = -1;
+    FILE *fptr = fopen("/tmp/fixedmcsul", "rt");
+    if(fptr) {
+      int mymcs = -1;
+      int res = fscanf(fptr, "%d", &mymcs);
+      if(res > 0 && mymcs >= 0 && mymcs <= 28)
+        fixed_mcs_ul = mymcs;
+      fclose(fptr);
+    }
+*/
+// GRINGO CACCA END
     if (fixed_mcs_ul < 0) {
-      tbs = alloc_tbs(ul_cqi, allocation.L, nof_re, req_bytes, max_mcs_ul, &mcs);      
+      tbs = alloc_tbs(ul_cqi, allocation.L, nof_re, req_bytes, max_mcs_ul, &mcs, false);      
     } else {
       tbs = srslte_ra_tbs_from_idx(srslte_ra_tbs_idx_from_mcs(fixed_mcs_ul), allocation.L);
       mcs = fixed_mcs_ul;
@@ -581,7 +594,7 @@ uint32_t sched_ue::get_required_prb_dl(uint32_t req_bytes, uint32_t nof_ctrl_sym
   for (n=1;n<cell.nof_prb && nbytes < req_bytes;n++) {
     nof_re = srslte_ra_dl_approx_nof_re(cell, n, nof_ctrl_symbols);
     if (fixed_mcs_dl < 0) {
-      tbs = alloc_tbs(dl_cqi, n, nof_re, 0, max_mcs_dl, &mcs);      
+      tbs = alloc_tbs(dl_cqi, n, nof_re, 0, max_mcs_dl, &mcs, true);      
     } else {
       tbs = srslte_ra_tbs_from_idx(srslte_ra_tbs_idx_from_mcs(fixed_mcs_dl), n);
     }
@@ -610,7 +623,7 @@ uint32_t sched_ue::get_required_prb_ul(uint32_t req_bytes)
     uint32_t nof_re = (2*(SRSLTE_CP_NSYMB(cell.cp)-1) - N_srs)*n*SRSLTE_NRE;
     int tbs = 0; 
     if (fixed_mcs_ul < 0) {
-      tbs = alloc_tbs(ul_cqi, n, nof_re, 0, max_mcs_ul, &mcs);      
+      tbs = alloc_tbs(ul_cqi, n, nof_re, 0, max_mcs_ul, &mcs, false);      
     } else {
       tbs = srslte_ra_tbs_from_idx(srslte_ra_tbs_idx_from_mcs(fixed_mcs_ul), n);
     }
@@ -757,18 +770,40 @@ int sched_ue::alloc_tbs(uint32_t cqi,
                               uint32_t nof_re,
                               uint32_t req_bytes, 
                               uint32_t max_mcs, 
-                              int *mcs) 
+                              int *mcs,
+                              bool is_dl) 
 {
   uint32_t sel_mcs = 0; 
   int tbs = cqi_to_tbs(cqi, nof_prb, nof_re, max_mcs, &sel_mcs)/8;
-  
-  /* If less bytes are requested, lower the MCS */
-  if (tbs > (int) req_bytes && req_bytes > 0) {
-    uint32_t req_tbs_idx = srslte_ra_tbs_to_table_idx(req_bytes*8, nof_prb); 
-    uint32_t req_mcs = srslte_ra_mcs_from_tbs_idx(req_tbs_idx);
-    if (req_mcs < sel_mcs) {
-      sel_mcs = req_mcs; 
-      tbs = srslte_ra_tbs_from_idx(req_tbs_idx, nof_prb)/8;
+ 
+// GRINGO CACCA
+  FILE *fptr = NULL;
+  if (is_dl)
+    fptr = fopen("/tmp/fixedmcsdl", "rt");
+  else
+    fptr = fopen("/tmp/fixedmcsul", "rt");
+
+  if(fptr) {
+    int mymcs = -1;
+    int res = fscanf(fptr, "%d", &mymcs);
+    if(res > 0 && mymcs >= 0 && mymcs <= 28)
+    {
+       sel_mcs = mymcs;
+       tbs = srslte_ra_tbs_from_idx(srslte_ra_tbs_idx_from_mcs(sel_mcs), nof_prb)/8;
+    }
+    fclose(fptr);
+  }
+// GRINGO CACCA END
+  else
+  {  
+    /* If less bytes are requested, lower the MCS */
+    if (tbs > (int) req_bytes && req_bytes > 0) {
+      uint32_t req_tbs_idx = srslte_ra_tbs_to_table_idx(req_bytes*8, nof_prb); 
+      uint32_t req_mcs = srslte_ra_mcs_from_tbs_idx(req_tbs_idx);
+      if (req_mcs < sel_mcs) {
+        sel_mcs = req_mcs; 
+        tbs = srslte_ra_tbs_from_idx(req_tbs_idx, nof_prb)/8;
+      }
     }
   }
   // Avoid the unusual case n_prb=1, mcs=6 tbs=328 (used in voip)
