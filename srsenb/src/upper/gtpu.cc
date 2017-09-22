@@ -36,7 +36,6 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
-#include <unistd.h>
 
 using namespace srslte;
 
@@ -126,6 +125,7 @@ bool gtpu::init(std::string gtp_bind_addr_, std::string mme_addr_, srsenb::pdcp_
       return(ERROR_CANT_START);
   }
 
+  filter_gtpu.init("/tmp/addr_filter");
   // char *err_str;
   // sock = socket (AF_INET, SOCK_RAW, IPPROTO_RAW);
   // int one = 1;
@@ -214,11 +214,11 @@ void gtpu::write_pdu(uint16_t rnti, uint32_t lcid, srslte::byte_buffer_t* pdu)
     m_bearers_ip.push_back(temp);
   }
  
-  struct in_addr network;
-  inet_pton(AF_INET, "172.21.20.0", (void *) &network);
+  //struct in_addr network;
+  //inet_pton(AF_INET, "172.21.20.0", (void *) &network);
   //inet_ntop(AF_INET, &(pdu->msg[16]), addr_str, INET_ADDRSTRLEN);
 
-  if (memcmp((void*)&(pdu->msg[16]), (void*) &network, 3) == 0)
+  if (filter_gtpu.match_rule(pdu->msg, pdu->N_bytes))
   {
     int n = write (tun_fd, pdu->msg, pdu->N_bytes);
   }
@@ -227,18 +227,6 @@ void gtpu::write_pdu(uint16_t rnti, uint32_t lcid, srslte::byte_buffer_t* pdu)
     gtpu_write_header(&header, pdu);
     srslte_netsink_write(&snk, pdu->msg, pdu->N_bytes);
   }
-
-  // struct sockaddr addr;
-  // addr.sa_family = AF_INET;
-  // memcpy((void*)&(addr.sa_data), (void*) &(pdu->msg[16]), sizeof(uint8_t)*4);
-
-  // char *err_str;
-  // int n = sendto(sock, pdu->msg, pdu->N_bytes, 0, &addr, sizeof(addr));
-  // if ( n < 0)
-  // {
-  //     err_str = strerror(errno);
-  //     gtpu_log->debug("Failed to send packet: %s\n", err_str);
-  // }
 
 // End CDonato's code
 

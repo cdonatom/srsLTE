@@ -29,12 +29,14 @@
 #include <vector>
 #include <linux/ip.h>
 
+#include "upper/filter_gtpu.h"
 #include "srslte/common/buffer_pool.h"
 #include "srslte/common/log.h"
 #include "upper/common_enb.h"
 #include "srslte/common/threads.h"
 #include "srslte/srslte.h"
 #include "srslte/interfaces/enb_interfaces.h"
+
 
 #include <linux/if.h>
 
@@ -99,6 +101,7 @@ private:
   std::string                  mme_addr;
   srsenb::pdcp_interface_gtpu *pdcp;
   srslte::log                 *gtpu_log;
+  srsenb::filter_gtpu          filter_gtpu;
   int32                        tun_fd;
   struct ifreq                 ifr;
   int32                        sock;
